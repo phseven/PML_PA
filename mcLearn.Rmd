@@ -1,0 +1,536 @@
+---
+title: "Predicting Exercise Quality from Activity Data"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: cerulean
+    highlight: tango
+    
+---
+
+### Synopsis
+
+With the advent of personal activity measuring devices, a large amount of 
+such activity data can be gathered inexpensively. In this project, activity
+data is used to model and predict quality of exercise.          
+      
+Specifically, Weight Lifting Exercise data is obtained from 
+accelerometers on the belt, forearm, arm, and dumbell for 6 study 
+participants to predict whether the perticipants are performing Unilateral 
+Dumbbell Biceps Curl correctly.         
+      
+This study has practical implications, as correct prediction of exercise 
+quality can give instant feedback and correct mistakes, as well as reduce 
+chances of exercise related injuries.         
+       
+The data obtained is from the article "Qualitative Activity 
+Recognition of Weight Lifting Exercises" [Velloso et al, SIGCHI 2013] 
+available at:  http://groupware.les.inf.puc-rio.br/work.jsf?p1=11201       
+       
+In this project, the exercise data is used to predict the quality of exercise
+using three different prediction algorithms. The random Forest model has the
+highest accuracy at 99.4%.      
+     
+-----------------
+      
+      
+### Basic Setup      
+     
+     
+```{r, results='hide'}
+
+# clear everything
+
+rm(list = ls())
+
+# Load required packages
+
+require(utils)
+require(R.utils)
+require(data.table)
+require(reshape2)
+require(caret)
+require(kernlab)
+require(randomForest)
+require(gbm)
+require(survival)
+require(splines)
+require(ggplot2)
+require(grid)
+
+# -- set a seed
+
+set.seed(11)
+
+```
+     
+-------------
+     
+### Load Saved Models From File 
+     
+As generating models is time intensive, save the models in a file after a run,
+so that they can be loaded at the time of a subsequent run.   
+     
+     
+```{r, }
+
+if(file.exists("saved_models.Rda")) {
+    load("saved_models.Rda")
+}
+```
+     
+-------------
+     
+### Download Training and Test Data Files
+      
+      
+```{r, results='hide'}
+
+# Download training file if it does not exist in current directory
+
+trnfl <- "pml-training.csv"
+trnurl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+
+if (file.exists(trnfl) == FALSE) {
+    download.file(trnurl, destfile = trnfl, method = "curl", quiet = TRUE)    
+}
+
+# Download testing file if it does not exist in current directory
+
+tstfl <- "pml-testing.csv"
+tsturl<-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+
+if (file.exists(tstfl) == FALSE) {
+    download.file(tsturl, destfile = tstfl, method = "curl", quiet = TRUE)    
+}
+
+```
+      
+      
+-------------
+     
+### Load Training and Test Datafiles into Data Tables
+        
+        
+```{r, results='hide'}
+
+# Read training file into datatable.
+
+ndt <- fread(trnfl)
+
+# Read testfile into datatable.
+
+sdt <- fread(tstfl)
+
+```
+      
+      
+-------------
+     
+### Find Columns That Are Mostly Empty (Blank or NA)
+     
+     
+```{r, results='hide'}
+
+# Number of rows /columns in the dataset obtained from training file.
+
+rowCnt1 <- ndt[,.N]
+colCnt1 <- length(names(ndt))
+
+# For each column in ndt data table, count number of NA or blanks. 
+
+ndt1 <- ndt[,lapply(.SD, function(x) {is.na(x) | x == ""})][,lapply(.SD,sum)]
+
+# Create a new data table cols with 2 columns: 
+# Col= column name, 
+# EmptyCnt = number of empty values (NA or blank) for that column
+
+cols <- melt(ndt1, id.vars=NULL, measure.vars=c(1:colCnt1), 
+                variable.name="Col", value.name="EmptyCnt",
+                variable.factor = FALSE)
+
+```
+     
+     
+-------------
+     
+### Sparse Columns   
+      
+      
+```{r}
+
+empty <- cols[EmptyCnt != 0]
+uniqEmpty <- empty[, unique(EmptyCnt)]
+pctEmpty <- round(uniqEmpty * 100 / rowCnt1, 1)
+
+```
+     
+     
+All the columns that contain empty values, have a high 
+percentage (`r pctEmpty`%) of values that are empty. Since so many values are
+empty, imputation is not going to be helpful. Instead, these columns with 
+empty values will not be used as features (predictors).
+      
+      
+-------------
+     
+### Columns Without Empty Values
+      
+      
+```{r}
+
+# Show the nonempty columns
+
+(nempty <- cols[EmptyCnt == 0])
+```
+     
+     
+Among the nonempty columns, classe (column 60) is the outcome we are trying to 
+predict, so it will not be part of the feature columns. Columns 1:7 (V1, 
+user_name, raw_timestamp_part_1, raw_timestamp_part_2, cvtd_timestamp, 
+new_window, num_window) are not activity measurements, and so will be excluded.
+     
+     
+``` {r, results='hide'}
+
+# Get the chosen feature columnnames into finalCols vector
+
+finalCols <- nempty[8:59, Col]
+
+```
+     
+     
+-------------
+     
+### Create Data Tables with Feature Columns
+     
+     
+``` {r}
+
+# Get rid of non-feature columns
+
+ndtA <- ndt[,finalCols, with=FALSE]
+sdtA <- sdt[,finalCols, with=FALSE]
+
+# Get classe (outcome) as a vector of factors
+
+classeA <- as.factor(ndt[,classe])
+
+```
+     
+     
+-------------
+     
+### Create Training and Test Datasets
+      
+      
+```{r, results='hide'}
+
+# Create a traindt training dataset and testdt testing dataset by using
+# the createDataPartition function from the caret package.
+# Change output of createDataPartition from matrix to vector.
+
+inTrain <- as.vector(createDataPartition(y = classeA, p = 0.8, list = FALSE))
+
+traindt <- ndtA[inTrain]
+testdt <- ndtA[-inTrain]
+
+# Similarly, partition the predicted variable classe into training and test.
+
+trainClasse <- classeA[inTrain]
+testClasse <- classeA[-inTrain]
+
+# Remove ndt, ndtA, sdt and classeA to free up some memory.
+
+rm(ndt, ndtA, sdt, classeA)
+
+```
+      
+      
+-------------
+     
+### Create Model with Training Data
+     
+     
+A 10-fold cross-validation is used to tune the parameters for models.
+Three types of models are used for comparison: 
+     
+- Support Vector Machines with Radial Basis Function Kernel (svmRadial)   
+- Stochastic Gradient Boosting (gbm)   
+- Random Forest (rf)
+      
+      
+```{r, results='hide'}
+
+# Specify training control parameters: cv = cross validation
+# number = 10 (number of folds).
+
+fitCtl <- trainControl(method = "cv", number = 10)
+
+```
+      
+      
+-------------
+     
+### Model 1: Support Vector Machine Model
+       
+      
+```{r, cache=TRUE}
+
+# Create a svm based model (if model does not exist)
+
+if(!exists("svmFit")) {
+    (svmFit <- train(trainClasse ~ ., data = traindt,
+                 method = "svmRadial",
+                 trControl = fitCtl,
+                 preProc = c("center", "scale")))
+}    
+```
+     
+     
+-------------
+     
+### Cross Validation of Support Vector Machine Model
+     
+The parameter tuned by cross validation is Cost (C).
+
+```{r, fig.height=6, fig.width=8, echo=TRUE}
+
+
+# Plot1:  Accuarcy vs Cost in svm model
+
+ggplot(svmFit$results, aes(x = C, y = Accuracy)) +
+    geom_point(colour = I("blue")) + geom_line(colour = I("blue")) +
+    xlab("Cost (C)") + ylab("Accuracy") + 
+    ggtitle("SVM Model: Accuracy vs Cost") +
+    geom_text(x = 0.9, y = 0.89, label = "sigma = 0.014") +
+    coord_cartesian(xlim = c(0.1, 1.04)) + theme_bw()
+
+# Get maximum accuracy and corresponding error in percent
+
+svmAcc <- round(100 * max(svmFit$results$Accuracy), 1)
+svmErr <- 100 - svmAcc
+
+    
+```
+      
+During cross validation, Cost(C) = 1 yields the highest accuracy 
+`r svmAcc`% or cross validation error of `r svmErr`%. With this model, the 
+out of sample (test data) error is expected to be greater than `r svmErr`%.    
+     
+     
+-------------
+     
+### Performance of Support Vector Machine Model with Test Data
+      
+      
+```{r, cache=TRUE}
+
+svmPred <- predict(svmFit, newdata=testdt)
+confusionMatrix(svmPred, testClasse)
+
+svmUnknownPred <- predict(svmFit,newdata=sdtA)
+
+```
+      
+      
+-------------
+     
+### Model 2: Stochastic Gradient Boosting Model
+     
+       
+```{r, cache=TRUE}
+
+# Create a gbm based model (if it does not exist).
+
+if(!exists("gbmFit")) {
+    (gbmFit <- train(trainClasse ~ ., data = traindt,
+                 method = "gbm",
+                 trControl = fitCtl,
+                 verbose = FALSE ))
+}
+```
+      
+      
+-------------
+     
+### Cross Validation of Stochastic Gradient Boosting Model
+      
+     
+The parameters tuned by cross validation are:
+     
+- Number of Boosting Iterations (n.trees)
+- Maximum Tree Depth (interaction.depth)
+
+```{r, fig.height=6, fig.width=8, echo=TRUE}
+
+# Plot1:  Accuarcy vs Cost in svm model
+
+ggplot(gbmFit$results, aes(x = n.trees, y = Accuracy, 
+        group = as.factor(interaction.depth), 
+        linetype = as.factor(interaction.depth), 
+        colour = as.factor(interaction.depth))) + 
+    geom_point() + geom_line() + 
+    xlab("Number of Boosting Iterations") +
+    ylab("Accuracy") + ggtitle("Stochastic Gradient Boosting Model: 
+    Accuracy vs Number of Boosting Iterations") + 
+    labs(colour = "Maximum Tree Depth", linetype = "Maximum Tree Depth") +
+    geom_text(x = 125, y = 0.78, label = "shrinkage = 0.1") +
+    theme_bw()
+
+# Get maximum accuracy and corresponding error in percent
+
+gbmAcc <- round(100 * max(gbmFit$results$Accuracy), 1)
+gbmErr <- 100 - gbmAcc
+    
+```
+         
+During cross validation, Number of Boosting Iterations = 150 and 
+Maximum Tree Depth = 3 yields the highest accuracy `r gbmAcc`% or 
+cross validation error of `r gbmErr`%. The out of sample (test data) error 
+is expected to be higher than `r gbmErr`%.     
+     
+     
+-------------
+     
+### Performance of Stochastic Gradient Boosting Model with Test Data
+     
+     
+```{r, cache=TRUE}
+
+gbmPred <- predict(gbmFit, newdata=testdt)
+
+confusionMatrix(gbmPred, testClasse)
+
+gbmUnknownPred <- predict(gbmFit,newdata=sdtA)
+
+```
+      
+      
+-------------
+     
+### Model 3: Random Forest Model
+     
+     
+```{r, cache=TRUE}
+
+# Create a random forest model (if it does not exist).
+
+if(!exists("rfFit")) {
+    (rfFit <- train(trainClasse ~ ., data = traindt,
+                 method = "rf",
+                 trControl = fitCtl,
+                 verbose = FALSE ))
+}
+```
+     
+     
+-------------
+     
+### Cross Validation Performance of Random Forest Model
+     
+     
+The parameter tuned by cross validation is:
+
+- Number of randomly selected predictors (mtry)
+     
+     
+```{r, fig.height=6, fig.width=6, echo=TRUE}
+
+# Plot3:  Accuarcy vs mtry in random Forest model.
+
+ggplot(rfFit$results, aes(x = mtry, y = Accuracy)) +
+    geom_point(colour = I("blue")) + geom_line(colour = I("blue")) +
+    xlab("Number of Randomly Selected Predictors") + ylab("Accuracy") + 
+    ggtitle("Random Forest Model: Accuracy vs Number of Randomly 
+            Selected Predictors") +
+    theme_bw()
+
+# Get maximum accuracy and corresponding error in percent
+
+rfAcc <- round(100 * max(rfFit$results$Accuracy), 1)
+rfErr <- 100 - rfAcc
+
+```
+       
+       
+During cross validation, Number of randomly selected predictors = 2 yields the highest accuracy `r rfAcc`% or cross validation error of `r rfErr`%. 
+The out of sample (test data) error is expected to be higher than `r rfErr`%.           
+     
+-------------
+     
+### Performance of Random Forest Model With Test Data
+     
+     
+```{r, cache=TRUE}
+
+rfPred <- predict(rfFit, newdata=testdt)
+confusionMatrix(rfPred, testClasse)
+
+rfUnknownPred <- predict(rfFit,newdata=sdtA)
+
+data.table(svmUnknownPred, gbmUnknownPred, rfUnknownPred)
+
+```
+     
+     
+-------------
+     
+### Analysis
+       
+       
+As the above data show, the Random Forest model has best accuracy 
+(`r rfAcc`% ), followed by Stochastic Gradient Boosting (`r gbmAcc`% ), 
+while the Support Vector Machines with Radial Basis Function Kernel model
+has the worst showing (`r svmAcc`% accuracy) for this dataset. 
+
+Furthermore, for the 20 rows of testdata whose classe are unknown, the 
+predicted values are in complete agreement for Support Vector Machine model
+and Random Forest models. For the Stochastic Gradient Boosting model, the 
+predicted data values are mostly in agreement with the other models, with 
+only one exception - for problem 1, the Stochastic Gradient Boosting model
+predicts C whereas the other two models predict B. 
+
+Considering, however, that the Random Forest model has the highest accuracy
+among the three models, and the fact that the Random Forest model 
+prediction is supported by the SVM model (majority prediction), the
+answer for problem 1 is chosen to be B (which is later found to be 
+correct).
+     
+Overall, for the 20 rows of unknown Classe, both Random Forest and SVM
+models have 100% accurate predictions, which is slightly better than expected.
+The Stochastic Gradient Boosting model has 95% accuracy, which is in
+expected accuracy range for out of sample data.
+
+
+-------------
+     
+### Write Answers to Individual Files
+     
+     
+```{r, results='hide'}
+
+ans <- rfUnknownPred
+
+for(i in 1:length(ans)){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(ans[i],file=filename,quote=FALSE,row.names=FALSE,
+                col.names=FALSE)
+  }
+
+```
+     
+     
+-------------
+     
+### Save Models to a File
+      
+      
+```{r, results='hide'}
+
+save( rfFit, gbmFit, svmFit, file = "saved_models.Rda")
+
+```
+     
+     
