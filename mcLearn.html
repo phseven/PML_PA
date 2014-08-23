@@ -651,7 +651,11 @@ for(i in <span class="dv">1</span>:<span class="kw">length</span>(ans)){
 </div>
 <div id="save-models-to-a-file" class="section level3">
 <h3>Save Models to a File</h3>
-<pre class="sourceCode r"><code class="sourceCode r"><span class="kw">save</span>( rfFit, gbmFit, svmFit, <span class="dt">file =</span> <span class="st">&quot;saved_models.Rda&quot;</span>)</code></pre>
+<pre class="sourceCode r"><code class="sourceCode r"><span class="co"># Save to file if it does not exist already.</span>
+
+if(!<span class="kw">file.exists</span>(<span class="st">&quot;saved_models.Rda&quot;</span>)) {
+    <span class="kw">save</span>( rfFit, gbmFit, svmFit, <span class="dt">file =</span> <span class="st">&quot;saved_models.Rda&quot;</span>)
+}    </code></pre>
 </div>
 
 

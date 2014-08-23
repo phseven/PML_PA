@@ -8,7 +8,7 @@ output:
     highlight: tango
     
 ---
-     
+        
 ### Synopsis
 
 With the advent of personal activity measuring devices, a large amount of 
@@ -529,7 +529,11 @@ for(i in 1:length(ans)){
       
 ```{r, results='hide'}
 
-save( rfFit, gbmFit, svmFit, file = "saved_models.Rda")
+# Save to file if it does not exist already.
+
+if(!file.exists("saved_models.Rda")) {
+    save( rfFit, gbmFit, svmFit, file = "saved_models.Rda")
+}    
 
 ```
      
